@@ -2,6 +2,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+# Simple password protection
+PASSWORD = "abolu123"
+
+st.title("🔒 Acceso restringido")
+
+input_pass = st.text_input("Introduce la contraseña:", type="password")
+
 # Cargar datos
 df = pd.read_excel('formato.xlsx', engine='openpyxl')
 
