@@ -12,8 +12,20 @@ input_pass = st.text_input("Introduce la contraseña:", type="password")
 # Cargar datos
 df = pd.read_excel('formato.xlsx', engine='openpyxl')
 
+# Cargar archivo externo
+df_perdidos = pd.read_excel("ventas sin cruzar.xlsx")
+
 # Procesamiento
 df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce')
+for col in ['Cliente', 'Vendedor']:
+    if col in df.columns:
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+            .str.upper()
+        )
 month_map = {'Enero':1,'Febrero':2,'Marzo':3,'Abril':4,'Mayo':5,'Junio':6,'Julio':7,
              'Agosto':8,'Septiembre':9,'Octubre':10,'Noviembre':11,'Diciembre':12}
 df['Fecha'] = df['Mes_Año'].apply(lambda x: pd.Timestamp(int(x.split()[1]), month_map[x.split()[0]], 1) if isinstance(x,str) and len(x.split())==2 else pd.NaT)
@@ -136,45 +148,54 @@ client_change = pd.DataFrame(records, columns=[
 st.subheader("Cambios en SKUs por Cliente")
 st.dataframe(client_change)
 
-st.subheader("📈 Crecimiento por Cliente y Vendedor (Solo Semestre 1)")
+st.subheader("📈 Comparativo total por Cliente y Vendedor")
 
-# Filtrar solo semestre 1
-sem1_df = df[df['Semestre'] == 1]
+# === NUEVA LÓGICA TOTAL CLIENTES ===
+ventas_2025_total = df[df['Año'] == 2025].groupby('Cliente')['Monto'].sum().rename('Monto 2025')
+ventas_2024_total = df[df['Año'] == 2024].groupby('Cliente')['Monto'].sum().rename('Monto 2024')
 
-# --- CLIENTES SEMESTRE 1 ---
-client_sem1 = sem1_df.groupby(['Cliente', 'Año'])['Monto'].sum().unstack(fill_value=0).reset_index()
-client_sem1 = client_sem1.rename(columns={2024: 'Monto 2024', 2025: 'Monto 2025'})
+# Unir
+client_total = pd.concat([ventas_2024_total, ventas_2025_total], axis=1).fillna(0).reset_index()
 
-# Calcular crecimiento
-client_sem1['% Crecimiento'] = ((client_sem1['Monto 2025'] - client_sem1['Monto 2024']) /
-                                client_sem1['Monto 2024'].replace(0, pd.NA)) * 100
+# Clasificar clientes nuevos
+client_total['Es_nuevo'] = (client_total['Monto 2024'] == 0) & (client_total['Monto 2025'] > 0)
 
-# Separar nuevos de existentes
-nuevos = client_sem1[client_sem1['% Crecimiento'].isna()].copy()
-existentes = client_sem1[client_sem1['% Crecimiento'].notna()].copy()
+# Calcular diferencia
+client_total['Falta para superar'] = client_total['Monto 2024'] - client_total['Monto 2025']
+client_total['Falta para superar'] = client_total['Falta para superar'].apply(lambda x: 0 if x < 0 else x)
 
-# Formato
-existentes['% Crecimiento'] = existentes['% Crecimiento'].round(2)
-nuevos['% Crecimiento'] = "Cliente nuevo"
+# Separar
+nuevos = client_total[client_total['Es_nuevo']].copy()
+existentes = client_total[~client_total['Es_nuevo']].copy()
 
-# Contar
-st.metric("🆕 Clientes nuevos en 2025 (Semestre 1)", len(nuevos))
+# Filtrar clientes sin ventas en ambos años
+existentes = existentes[~((existentes['Monto 2024'] == 0) & (existentes['Monto 2025'] == 0))]
 
-# Mostrar tablas separadas
-st.subheader("👥 Crecimiento por Cliente (Semestre 1)")
-st.dataframe(existentes[['Cliente', 'Monto 2024', 'Monto 2025', '% Crecimiento']].sort_values(by='% Crecimiento', ascending=False))
+# Mostrar resumen
+st.metric("🆕 Clientes nuevos en 2025", len(nuevos))
 
-st.subheader("🆕 Clientes Nuevos en 2025 (Semestre 1)")
-st.dataframe(nuevos[['Cliente', 'Monto 2024', 'Monto 2025', '% Crecimiento']].sort_values(by='Monto 2025', ascending=False))
+# Mostrar disclaimer
+st.caption("*Nota 1: Esta comparación considera las ventas totales acumuladas en 2024 y 2025. El análisis de 'cliente nuevo' se basa en ausencia total de compras en 2024.*")
+st.caption("*Nota 2: Monto de 0 y 0 en ambos años es porque en el año 2025 hizo una compra y luego una nota de crédito.*")
 
-# -------------------- VENDEDORES --------------------
-vend_sem1 = sem1_df.groupby(['Vendedor', 'Año'])['Monto'].sum().unstack(fill_value=0).reset_index()
-vend_sem1 = vend_sem1.rename(columns={2024: 'Monto 2024', 2025: 'Monto 2025'})
-vend_sem1['% Crecimiento'] = ((vend_sem1['Monto 2025'] - vend_sem1['Monto 2024']) /
-                              vend_sem1['Monto 2024'].replace(0, pd.NA)) * 100
+# Mostrar tablas
+st.subheader("👥 Comparativo por Cliente")
+st.dataframe(existentes[['Cliente', 'Monto 2024', 'Monto 2025', 'Falta para superar']].sort_values(by='Falta para superar'))
 
-st.subheader("🧑‍💼 Crecimiento por Vendedor (Semestre 1)")
-st.dataframe(vend_sem1[['Vendedor', 'Monto 2024', 'Monto 2025', '% Crecimiento']])
+st.subheader("🆕 Clientes Nuevos en 2025")
+st.dataframe(nuevos[['Cliente', 'Monto 2024', 'Monto 2025']].sort_values(by='Monto 2025', ascending=False))
+
+# === NUEVA LÓGICA TOTAL VENDEDORES ===
+ventas_2025_v = df[df['Año'] == 2025].groupby('Vendedor')['Monto'].sum().rename('Monto 2025')
+ventas_2024_v = df[df['Año'] == 2024].groupby('Vendedor')['Monto'].sum().rename('Monto 2024')
+
+vend_total = pd.concat([ventas_2024_v, ventas_2025_v], axis=1).fillna(0).reset_index()
+vend_total['Falta para superar'] = vend_total['Monto 2024'] - vend_total['Monto 2025']
+vend_total['Falta para superar'] = vend_total['Falta para superar'].apply(lambda x: 0 if x < 0 else x)
+
+st.subheader("🧑‍💼 Comparativo por Vendedor")
+st.dataframe(vend_total[['Vendedor', 'Monto 2024', 'Monto 2025', 'Falta para superar']].sort_values(by='Falta para superar'))
+
 
 # =========================
 # ANÁLISIS DETALLADO - CLIENTE
@@ -465,4 +486,57 @@ with st.expander("👤 Análisis detallado por Vendedor"):
             t['% Cambio'] = t['% Cambio'].round(2)
             st.caption("SKUs constantes (vendidos en ambos años).")
             st.dataframe(t)
+
+# === CLIENTES PERDIDOS DE PINTUCO ===
+with st.expander("💸 Clientes Perdidos (Solo Pintuco Vendía en 2024)"):
+    st.caption("🛈 Este análisis muestra los clientes que tenían compras en 2024 con Pintuco, pero no están en nuestra base de datos de 2025.")
+
+    # Cargar archivo externo
+    df_perdidos = pd.read_excel("ventas sin cruzar.xlsx")
+
+    # Normalizar columnas
+    df_perdidos.columns = df_perdidos.columns.str.strip()
+    df_perdidos['Cliente'] = df_perdidos['Cliente'].astype(str).str.strip().str.upper()
+    df_perdidos['Departamento'] = df_perdidos['Departamento'].astype(str).str.strip().str.upper()
+
+    # Excluir ABOLU SA y vacíos
+    df_perdidos = df_perdidos[~df_perdidos['Cliente'].isin(['ABOLU SA', '', 'NAN'])]
+    df_perdidos = df_perdidos[~df_perdidos['Cliente'].isna()]
+
+    # Calcular totales
+    total_2024 = df_perdidos['Total 2024'].sum()
+    total_2025 = df_perdidos['Total 2025'].sum()
+    total_clientes = df_perdidos['Cliente'].nunique()
+
+    # Mostrar métricas principales en una fila
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("💰 2024", f"${total_2024:,.0f}")
+    with col2:
+        st.metric("📦 2025", f"${total_2025:,.0f}")
+    with col3:
+        st.metric("🔄 Total", f"${(total_2024 + total_2025):,.0f}")
+
+    # Mostrar métrica de clientes debajo
+    st.metric("👥 Total de clientes sin cuenta con Abolu", total_clientes)
+
+    # Tabla resumen
+    resumen = (
+        df_perdidos.groupby('Cliente')
+        .agg({
+            'Total 2024': 'sum',
+            'Total 2025': 'sum',
+            'Código Producto': 'nunique',
+            'Departamento': 'first'
+        })
+        .reset_index()
+        .rename(columns={
+            'Total 2024': 'Monto 2024',
+            'Total 2025': 'Monto 2025',
+            'Código Producto': 'Total SKUs',
+            'Departamento': 'Ruta'
+        })
+    )
+
+    st.dataframe(resumen[['Cliente', 'Ruta', 'Monto 2024', 'Monto 2025', 'Total SKUs']])
 
